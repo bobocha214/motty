@@ -35,6 +35,7 @@ var (
 	hitMonitorRetry         = tree.ID(monitorHits, "retry")
 	hitMonitorScroll        = tree.ID(monitorHits, "scroll")
 	hitMonitorThumb         = tree.ID(monitorHits, "scroll-thumb")
+	hitMonitorAlerts        = tree.ID(monitorHits, "alerts-config")
 )
 
 const monitorWidth = layoutcore.DefaultMonitorWidth
@@ -262,6 +263,10 @@ func (state *State) clickMonitor(id ui.ID) bool {
 		return true
 	case hitMonitorClose:
 		state.closeMonitor()
+		return true
+	case hitMonitorAlerts:
+		state.openSettings()
+		state.selectSettingsCategory(settingsNotifications)
 		return true
 	case hitMonitorMenuDismiss:
 		state.monitorMenu = false

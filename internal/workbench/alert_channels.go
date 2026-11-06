@@ -556,159 +556,166 @@ func (state *State) paintAlertChannelDialog(canvas *ui.Canvas, viewport ui.Rect)
 	signed := form.kind.Signed()
 	isEmail := form.kind == notify.Email
 
-	// 左侧类型列表 5 项，每项高 34px + 间距
-	const kindRowHeight = float32(34)
-	const kindRowGap = float32(4)
-	const kindListPadY = float32(4)
-	kindItemCount := 5 // Webhook + Feishu + DingTalk + WeCom + Email
-	kindListHeight := float32(kindItemCount)*kindRowHeight + float32(kindItemCount-1)*kindRowGap + 2*kindListPadY
-
-	// 右侧表单高度（与下面 field 数组的高度保持一致）
-	var formHeight float32 = 62 // name
+	// 固定 slots 布局
+	bodyHeight := float32(34 + 14 + 62) // kind row + name
 	if isEmail {
-		formHeight += 4*62 + 88 // host/user/from/to + password
+		bodyHeight += 4 * 62 // host/user/from/to
+		bodyHeight += 88 // password
 	} else {
-		formHeight += 88 // endpoint
+		bodyHeight += 88 // endpoint
 		if signed {
-			formHeight += 88 // signing secret
+			bodyHeight += 88 // signing secret
 		}
 	}
 	if form.testText != "" {
-		formHeight += 24
+		bodyHeight += 24
 	}
-	formHeight += 14 // problem line space
-
-	bodyHeight := max(kindListHeight, formHeight+8)
-	dialogWidth := float32(720)
-	leftWidth := float32(170)
 
 	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
 		Layer: dialogLayer, Scope: dialogScope,
 		DismissID: hitAlertDismiss, CloseID: hitAlertClose, InitialFocusID: hitAlertName,
-		ContentSize: ui.Size{Width: dialogWidth}, FitBody: true, BodyHeight: withError(bodyHeight, form.dialogError),
+		ContentSize: ui.Size{Width: 720}, FitBody: true, BodyHeight: withError(bodyHeight, form.dialogError),
 	})
 	layout := dialog.Begin(title, m.NotifyDialogDescription)
 
-	// 确定当前选中的类型 hit ID
-	selectedKindID := hitAlertKindWebhook
-	switch form.kind {
-	case notify.Feishu:
-		selectedKindID = hitAlertKindFeishu
-	case notify.DingTalk:
-		selectedKindID = hitAlertKindDing
-	case notify.WeCom:
-		selectedKindID = hitAlertKindWeCom
-	case notify.Email:
-		selectedKindID = hitAlertKindEmail
-	}
-
+	var kind, nameSlot, endpointSlot, secretSlot, testSlot, emailHostSlot, emailUserSlot, emailFromSlot, emailToSlot flex.Box
 	f := state.settingsRow.Begin(canvas, theme, layout.Body)
-	f.Row().Fill().Pad(2).Children(func() {
-		// 左侧：类型列表
-		f.Column().Width(leftWidth).FillHeight().PadSides(kindListPadY, 4, kindListPadY, 0).Gap(kindRowGap).Children(func() {
-			typeRows := []struct {
-				id   ui.ID
-				kind notify.Kind
-				label string
-			}{
-				{hitAlertKindWebhook, notify.Webhook, m.NotifyKindWebhook},
-				{hitAlertKindFeishu, notify.Feishu, m.NotifyKindFeishu},
-				{hitAlertKindDing, notify.DingTalk, m.NotifyKindDingTalk},
-				{hitAlertKindWeCom, notify.WeCom, m.NotifyKindWeCom},
-				{hitAlertKindEmail, notify.Email, m.NotifyKindEmail},
-			}
-			for _, t := range typeRows {
-				isSelected := t.id == selectedKindID
-				background := pal.surfaceSoft
-				foreground := pal.text
-				var border ui.Color
-				if isSelected {
-					background = pal.accentSoft
-					foreground = pal.accent
-					border = pal.accent
-				}
-				f.Row().Height(kindRowHeight).Gap(10).PadSides(0, 10, 0, 10).Items(flex.Center).
-					Background(background).Radius(radius.control).Border(1, border).
-					HitWith(t.id, t.label, ui.HitOptions{Role: ui.RoleButton, Selected: isSelected}).
-					Children(func() {
-					// 选中指示圆点
-					f.Row().Size(8, 8).Shrink(0).Center().Background(foreground).Radius(4)
-					// 类型名称
-					f.Row().Fill().Items(flex.Center).Children(func() {
-						f.Text(t.label).FontSize(metrics.FontSizeM).Color(foreground).LineHeight(20)
-					})
-				})
-			}
-		})
-
-		// 分隔线
-		f.Column().Width(1).FillHeight().Background(withAlpha(pal.line, 0.8)).MarginSides(8, 8, 8, 8)
-
-		// 右侧：表单
-		type field struct {
-			id          ui.ID
-			label       string
-			placeholder string
-			editor      *text.Editor
-			secure      bool
-			height      float32
-		}
-		var fields []field
-		fields = append(fields, field{hitAlertName, m.NotifyName, m.NotifyNamePlaceholder, &form.name, false, 62})
+	f.Column().Fill().PadSides(2, 4, 0, 4).Children(func() {
+		kind = f.Slot().Height(34).MarginSides(0, 0, 14, 0)
+		nameSlot = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
 		if isEmail {
-			fields = append(fields,
-				field{hitAlertEmailHost, m.NotifyEmailHost, m.NotifyEmailHostPlaceholder, &form.emailHost, false, 62},
-				field{hitAlertEmailUser, m.NotifyEmailUser, m.NotifyEmailUserPlaceholder, &form.emailUser, false, 62},
-				field{hitAlertEmailFrom, m.NotifyEmailFrom, m.NotifyEmailFromPlaceholder, &form.emailFrom, false, 62},
-				field{hitAlertEmailTo, m.NotifyEmailTo, m.NotifyEmailToPlaceholder, &form.emailTo, false, 62},
-				field{hitAlertSecret, m.NotifyEmailPassword, m.NotifyEmailPasswordPlaceholder, &form.secret, true, 88},
-			)
+			emailHostSlot = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
+			emailUserSlot = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
+			emailFromSlot = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
+			emailToSlot = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
+			secretSlot = f.Slot().Height(88).MarginSides(0, 0, 4, 0)
 		} else {
-			endpointPh := "https://"
-			if form.editing >= 0 {
-				endpointPh = m.NotifyEndpointKeep
-			}
-			fields = append(fields, field{hitAlertEndpoint, m.NotifyEndpoint, endpointPh, &form.endpoint, false, 88})
+			endpointSlot = f.Slot().Height(88).MarginSides(0, 0, 4, 0)
 			if signed {
-				secretPh := m.NotifySecretPlaceholder
-				if form.editing >= 0 {
-					secretPh = m.NotifySecretKeep
-				}
-				fields = append(fields, field{hitAlertSecret, m.NotifySecret, secretPh, &form.secret, true, 88})
+				secretSlot = f.Slot().Height(88).MarginSides(0, 0, 4, 0)
 			}
 		}
-
-		f.Column().Grow(1).FillHeight().PadSides(0, 4, 0, 4).Children(func() {
-			var slots []flex.Box
-			for _, fd := range fields {
-				slots = append(slots, f.Slot().Height(fd.height).MarginSides(0, 0, 4, 0))
-			}
-			var testSlot flex.Box
-			if form.testText != "" {
-				testSlot = f.Slot().Height(24).MarginSides(0, 0, 4, 0)
-			}
-			state.problemLine(f, form.dialogError)
-
-			for i, fd := range fields {
-				content := components.BeginField(canvas, theme, slots[i].Rect()).Paint(fd.label, "", "")
-				value := fd.editor.String()
-				focused := canvas.Focused() == fd.id
-				state.paintSecretInput(canvas, content, components.InputSnapshot{
-					ID: fd.id, Label: fd.label, Value: value, Placeholder: fd.placeholder,
-					Secure: fd.secure, Focused: focused, PlatformEditing: focused && value != "",
-				})
-			}
-			if form.testText != "" {
-				rect := testSlot.Rect()
-				color := pal.muted
-				if !form.testOK {
-					color = pal.danger
-				}
-				canvas.Label(elide(canvas, form.testText, metrics.FontSizeS, ui.WeightRegular, rect.Width), rect, ui.TextStyle{Size: metrics.FontSizeS, Color: color})
-			}
-		})
+		if form.testText != "" {
+			testSlot = f.Slot().Height(24).MarginSides(0, 0, 4, 0)
+		}
+		state.problemLine(f, form.dialogError)
 	})
 	f.End()
+
+	// 选中类型高亮
+	selected := hitAlertKindWebhook
+	switch form.kind {
+	case notify.Feishu:
+		selected = hitAlertKindFeishu
+	case notify.DingTalk:
+		selected = hitAlertKindDing
+	case notify.WeCom:
+		selected = hitAlertKindWeCom
+	case notify.Email:
+		selected = hitAlertKindEmail
+	}
+	options := [...]components.SegmentOption{
+		{ID: hitAlertKindWebhook, Label: m.NotifyKindWebhook},
+		{ID: hitAlertKindFeishu, Label: m.NotifyKindFeishu},
+		{ID: hitAlertKindDing, Label: m.NotifyKindDingTalk},
+		{ID: hitAlertKindWeCom, Label: m.NotifyKindWeCom},
+		{ID: hitAlertKindEmail, Label: m.NotifyKindEmail},
+	}
+	components.BeginSegmentedControl(canvas, theme, kind.Rect(), options[:], selected).Paint()
+
+	// 表单字段渲染
+	for _, field := range [...]struct {
+		id          ui.ID
+		label       string
+		description string
+		editor      *text.Editor
+		slot        flex.Box
+		secure      bool
+		placeholder string
+	}{
+		{hitAlertName, m.NotifyName, "", &form.name, nameSlot, false, m.NotifyNamePlaceholder},
+	} {
+		content := components.BeginField(canvas, theme, field.slot.Rect()).Paint(field.label, field.description, "")
+		value := field.editor.String()
+		focused := canvas.Focused() == field.id
+		state.paintSecretInput(canvas, content, components.InputSnapshot{
+			ID: field.id, Label: field.label, Value: value, Placeholder: field.placeholder,
+			Secure: field.secure, Focused: focused, PlatformEditing: focused && value != "",
+		})
+	}
+
+	if isEmail {
+		// Email 专用字段
+		for _, field := range [...]struct {
+			id          ui.ID
+			label       string
+			description string
+			editor      *text.Editor
+			slot        flex.Box
+			secure      bool
+			placeholder string
+		}{
+			{hitAlertEmailHost, m.NotifyEmailHost, "", &form.emailHost, emailHostSlot, false, m.NotifyEmailHostPlaceholder},
+			{hitAlertEmailUser, m.NotifyEmailUser, "", &form.emailUser, emailUserSlot, false, m.NotifyEmailUserPlaceholder},
+			{hitAlertEmailFrom, m.NotifyEmailFrom, "", &form.emailFrom, emailFromSlot, false, m.NotifyEmailFromPlaceholder},
+			{hitAlertEmailTo, m.NotifyEmailTo, "", &form.emailTo, emailToSlot, false, m.NotifyEmailToPlaceholder},
+		} {
+			content := components.BeginField(canvas, theme, field.slot.Rect()).Paint(field.label, field.description, "")
+			value := field.editor.String()
+			focused := canvas.Focused() == field.id
+			state.paintSecretInput(canvas, content, components.InputSnapshot{
+				ID: field.id, Label: field.label, Value: value, Placeholder: field.placeholder,
+				Secure: field.secure, Focused: focused, PlatformEditing: focused && value != "",
+			})
+		}
+		// Email password
+		content := components.BeginField(canvas, theme, secretSlot.Rect()).Paint(m.NotifyEmailPassword, "", "")
+		value := form.secret.String()
+		focused := canvas.Focused() == hitAlertSecret
+		placeholder := m.NotifyEmailPasswordPlaceholder
+		if form.editing >= 0 {
+			placeholder = m.NotifyEmailPasswordPlaceholder
+		}
+		state.paintSecretInput(canvas, content, components.InputSnapshot{
+			ID: hitAlertSecret, Label: m.NotifyEmailPassword, Value: value, Placeholder: placeholder,
+			Secure: true, Focused: focused, PlatformEditing: focused && value != "",
+		})
+	} else {
+		// 非 Email：endpoint + 可选 secret
+		endpointPh := "https://"
+		if form.editing >= 0 {
+			endpointPh = m.NotifyEndpointKeep
+		}
+		content := components.BeginField(canvas, theme, endpointSlot.Rect()).Paint(m.NotifyEndpoint, m.NotifyEndpointHint, "")
+		value := form.endpoint.String()
+		focused := canvas.Focused() == hitAlertEndpoint
+		state.paintSecretInput(canvas, content, components.InputSnapshot{
+			ID: hitAlertEndpoint, Label: m.NotifyEndpoint, Value: value, Placeholder: endpointPh,
+			Secure: false, Focused: focused, PlatformEditing: focused && value != "",
+		})
+		if signed {
+			secretPh := m.NotifySecretPlaceholder
+			if form.editing >= 0 {
+				secretPh = m.NotifySecretKeep
+			}
+			content := components.BeginField(canvas, theme, secretSlot.Rect()).Paint(m.NotifySecret, m.NotifySecretHint, "")
+			value := form.secret.String()
+			focused := canvas.Focused() == hitAlertSecret
+			state.paintSecretInput(canvas, content, components.InputSnapshot{
+				ID: hitAlertSecret, Label: m.NotifySecret, Value: value, Placeholder: secretPh,
+				Secure: true, Focused: focused, PlatformEditing: focused && value != "",
+			})
+		}
+	}
+
+	if form.testText != "" {
+		rect := testSlot.Rect()
+		color := pal.muted
+		if !form.testOK {
+			color = pal.danger
+		}
+		canvas.Label(elide(canvas, form.testText, metrics.FontSizeS, ui.WeightRegular, rect.Width), rect, ui.TextStyle{Size: metrics.FontSizeS, Color: color})
+	}
 
 	actions := []components.ButtonAction{}
 	if form.editing >= 0 {

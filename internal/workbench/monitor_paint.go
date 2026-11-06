@@ -80,7 +80,10 @@ func (state *State) paintMonitor(canvas *ui.Canvas, b ui.Rect, s *Session) {
 		pause, hint = iconPlay, m.Resume
 	}
 	state.paintMonitorRefresh(canvas, p, state.monitorMenuRect, v.state == remoteStatsReady)
-	state.paintIconButton(canvas, hitMonitorPause, pause, ui.Rect{X: state.monitorMenuRect.X + state.monitorMenuRect.Width + 4, Y: header.Y + (header.Height-24)/2, Width: 24, Height: 24}, hint, false, iconButtonQuiet, bg)
+	pauseRect := ui.Rect{X: state.monitorMenuRect.X + state.monitorMenuRect.Width + 4, Y: header.Y + (header.Height-24)/2, Width: 24, Height: 24}
+	state.paintIconButton(canvas, hitMonitorPause, pause, pauseRect, hint, false, iconButtonQuiet, bg)
+	alertsRect := ui.Rect{X: pauseRect.X + pauseRect.Width + 2, Y: pauseRect.Y, Width: 24, Height: 24}
+	state.paintIconButton(canvas, hitMonitorAlerts, iconSettings, alertsRect, state.messages.Tools.NotifyChannels, false, iconButtonQuiet, bg)
 	state.paintMonitorNavigation(canvas, p, ui.Rect{X: b.X + 12, Y: y + 6, Width: b.Width - 24, Height: 32})
 	y += monitorControlsHeight
 	if v.state >= remoteStatsUnsupported || p.count == 0 {
