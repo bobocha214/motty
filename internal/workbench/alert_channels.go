@@ -2,8 +2,10 @@ package workbench
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,14 +25,17 @@ import (
 var (
 	hitAlertAdd         = tree.ID(settingsHits, "alert-add")
 	hitAlertKindWebhook = tree.ID(settingsHits, "alert-kind-webhook")
-	hitAlertKindBark    = tree.ID(settingsHits, "alert-kind-bark")
-	hitAlertKindServer  = tree.ID(settingsHits, "alert-kind-serverchan")
 	hitAlertKindFeishu  = tree.ID(settingsHits, "alert-kind-feishu")
 	hitAlertKindDing    = tree.ID(settingsHits, "alert-kind-dingtalk")
 	hitAlertKindWeCom   = tree.ID(settingsHits, "alert-kind-wecom")
+	hitAlertKindEmail   = tree.ID(settingsHits, "alert-kind-email")
 	hitAlertName        = tree.ID(settingsHits, "alert-name")
 	hitAlertEndpoint    = tree.ID(settingsHits, "alert-endpoint")
 	hitAlertSecret      = tree.ID(settingsHits, "alert-secret")
+	hitAlertEmailHost   = tree.ID(settingsHits, "alert-email-host")
+	hitAlertEmailUser   = tree.ID(settingsHits, "alert-email-user")
+	hitAlertEmailFrom   = tree.ID(settingsHits, "alert-email-from")
+	hitAlertEmailTo     = tree.ID(settingsHits, "alert-email-to")
 	hitAlertTest        = tree.ID(settingsHits, "alert-test")
 	hitAlertSave        = tree.ID(settingsHits, "alert-save")
 	hitAlertDelete      = tree.ID(settingsHits, "alert-delete")
@@ -67,8 +72,12 @@ type alertChannelForm struct {
 	editing     int // -1 adds one
 	kind        notify.Kind
 	name        text.Editor
-	endpoint    text.Editor
-	secret      text.Editor
+	endpoint    text.Editor // shared by Webhook/Feishu/DingTalk/WeCom; Email stores JSON in vault slot, not edited directly
+	secret      text.Editor // Feishu/DingTalk signing secret, or Email SMTP password
+	emailHost   text.Editor // Email-specific: "host:port"
+	emailUser   text.Editor // Email-specific: SMTP username
+	emailFrom   text.Editor // Email-specific: from address
+	emailTo     text.Editor // Email-specific: comma-separated recipients
 	dialogError string
 	testText    string
 	testOK      bool
@@ -88,16 +97,14 @@ func alertChannelSigningSecretName(id uint32) string {
 func (state *State) alertKindName(kind notify.Kind) string {
 	m := state.messages.Tools
 	switch kind {
-	case notify.Bark:
-		return m.NotifyKindBark
-	case notify.ServerChan:
-		return m.NotifyKindServerChan
 	case notify.Feishu:
 		return m.NotifyKindFeishu
 	case notify.DingTalk:
 		return m.NotifyKindDingTalk
 	case notify.WeCom:
 		return m.NotifyKindWeCom
+	case notify.Email:
+		return m.NotifyKindEmail
 	}
 	return m.NotifyKindWebhook
 }
@@ -186,12 +193,28 @@ func (state *State) openAlertChannelForm(editing int) {
 	form := &state.alertForm
 	form.editing, form.kind = editing, notify.Webhook
 	form.name, form.endpoint, form.secret = text.Editor{}, text.Editor{}, text.Editor{}
+	form.emailHost, form.emailUser, form.emailFrom, form.emailTo = text.Editor{}, text.Editor{}, text.Editor{}, text.Editor{}
 	form.dialogError, form.testText, form.testOK, form.testing = "", "", false, false
 	form.serial++
 	if editing >= 0 && editing < len(state.alertChannels) {
 		channel := &state.alertChannels[editing]
 		form.kind = channel.Kind
 		form.name.Insert(channel.Name)
+		if channel.Kind == notify.Email {
+			// Load saved JSON config into dedicated Email fields.
+			if raw, ok := state.alertChannelEndpoint(channel.ID); ok {
+				if cfg, err := notify.ParseEmailConfig(raw); err == nil {
+					host := cfg.Host
+					if cfg.Port > 0 {
+						host = fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+					}
+					form.emailHost.Insert(host)
+					form.emailUser.Insert(cfg.Username)
+					form.emailFrom.Insert(cfg.From)
+					form.emailTo.Insert(strings.Join(cfg.To, ", "))
+				}
+			}
+		}
 	}
 	state.modal = modalAlertChannel
 }
@@ -219,16 +242,14 @@ func (state *State) clickAlertChannel(id ui.ID) {
 	switch id {
 	case hitAlertKindWebhook:
 		form.kind = notify.Webhook
-	case hitAlertKindBark:
-		form.kind = notify.Bark
-	case hitAlertKindServer:
-		form.kind = notify.ServerChan
 	case hitAlertKindFeishu:
 		form.kind = notify.Feishu
 	case hitAlertKindDing:
 		form.kind = notify.DingTalk
 	case hitAlertKindWeCom:
 		form.kind = notify.WeCom
+	case hitAlertKindEmail:
+		form.kind = notify.Email
 	case hitAlertTest:
 		state.testAlertChannelForm()
 	case hitAlertSave:
@@ -244,28 +265,58 @@ func (state *State) clickAlertChannel(id ui.ID) {
 // when the field is left empty while editing.
 func (state *State) formChannel() (notify.Channel, bool, string) {
 	form := &state.alertForm
-	endpoint := strings.TrimSpace(form.endpoint.String())
-	if endpoint == "" && form.editing >= 0 && form.editing < len(state.alertChannels) {
-		if form.kind != state.alertChannels[form.editing].Kind {
-			return notify.Channel{}, false, state.messages.Tools.NotifyErrEndpoint
+
+	var endpoint string
+	var secret string
+
+	if form.kind == notify.Email {
+		// Email packs its dedicated fields into the endpoint slot as JSON.
+		endpoint, secret = state.emailFormConfig()
+		if endpoint == "" && form.editing >= 0 && form.editing < len(state.alertChannels) {
+			// Reuse saved JSON if all Email fields are empty (keeping config).
+			if form.kind != state.alertChannels[form.editing].Kind {
+				return notify.Channel{}, false, state.messages.Tools.NotifyErrEndpoint
+			}
+			if opened := state.secrets.vault; opened != nil && opened.NeedsConversion() {
+				return notify.Channel{}, false, state.messages.Tools.NotifyErrLocked
+			}
+			saved, ok := state.alertChannelEndpoint(state.alertChannels[form.editing].ID)
+			if !ok {
+				return notify.Channel{}, false, state.messages.Tools.NotifyErrEndpoint
+			}
+			endpoint = saved
 		}
-		if opened := state.secrets.vault; opened != nil && opened.NeedsConversion() {
-			return notify.Channel{}, false, state.messages.Tools.NotifyErrLocked
+		if secret == "" && form.editing >= 0 && form.editing < len(state.alertChannels) {
+			// Reuse saved SMTP password.
+			if form.kind == state.alertChannels[form.editing].Kind {
+				secret = state.alertChannelSigningSecret(state.alertChannels[form.editing].ID)
+			}
 		}
-		saved, ok := state.alertChannelEndpoint(state.alertChannels[form.editing].ID)
-		if !ok {
-			return notify.Channel{}, false, state.messages.Tools.NotifyErrEndpoint
+	} else {
+		endpoint = strings.TrimSpace(form.endpoint.String())
+		if endpoint == "" && form.editing >= 0 && form.editing < len(state.alertChannels) {
+			if form.kind != state.alertChannels[form.editing].Kind {
+				return notify.Channel{}, false, state.messages.Tools.NotifyErrEndpoint
+			}
+			if opened := state.secrets.vault; opened != nil && opened.NeedsConversion() {
+				return notify.Channel{}, false, state.messages.Tools.NotifyErrLocked
+			}
+			saved, ok := state.alertChannelEndpoint(state.alertChannels[form.editing].ID)
+			if !ok {
+				return notify.Channel{}, false, state.messages.Tools.NotifyErrEndpoint
+			}
+			endpoint = saved
 		}
-		endpoint = saved
+		secret = strings.TrimSpace(form.secret.String())
+		if form.kind.Signed() && secret == "" && form.editing >= 0 && form.editing < len(state.alertChannels) &&
+			form.kind == state.alertChannels[form.editing].Kind {
+			secret = state.alertChannelSigningSecret(state.alertChannels[form.editing].ID)
+		}
+		if !form.kind.Signed() {
+			secret = ""
+		}
 	}
-	secret := strings.TrimSpace(form.secret.String())
-	if form.kind.Signed() && secret == "" && form.editing >= 0 && form.editing < len(state.alertChannels) &&
-		form.kind == state.alertChannels[form.editing].Kind {
-		secret = state.alertChannelSigningSecret(state.alertChannels[form.editing].ID)
-	}
-	if !form.kind.Signed() {
-		secret = ""
-	}
+
 	if len(secret) > maxAlertSecret {
 		return notify.Channel{}, false, state.messages.Tools.NotifyErrSecret
 	}
@@ -274,6 +325,43 @@ func (state *State) formChannel() (notify.Channel, bool, string) {
 		return notify.Channel{}, false, state.messages.Tools.NotifyErrEndpoint
 	}
 	return channel, true, ""
+}
+
+// emailFormConfig reads the four Email inputs and returns (jsonConfig, password).
+// An empty jsonConfig means all Email fields are blank — caller should preserve
+// the saved one.
+func (state *State) emailFormConfig() (string, string) {
+	form := &state.alertForm
+	hostPort := strings.TrimSpace(form.emailHost.String())
+	user := strings.TrimSpace(form.emailUser.String())
+	from := strings.TrimSpace(form.emailFrom.String())
+	toRaw := strings.TrimSpace(form.emailTo.String())
+	secret := strings.TrimSpace(form.secret.String())
+
+	if hostPort == "" && user == "" && from == "" && toRaw == "" {
+		return "", secret
+	}
+
+	host := hostPort
+	port := 0
+	if idx := strings.LastIndex(hostPort, ":"); idx > 0 {
+		host = hostPort[:idx]
+		if p, err := strconv.Atoi(hostPort[idx+1:]); err == nil {
+			port = p
+		}
+	}
+	var toList []string
+	for _, addr := range strings.Split(toRaw, ",") {
+		if trimmed := strings.TrimSpace(addr); trimmed != "" {
+			toList = append(toList, trimmed)
+		}
+	}
+	cfg := notify.EmailConfig{Host: host, Port: port, Username: user, From: from, To: toList}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return "", secret
+	}
+	return string(raw), secret
 }
 
 func (state *State) testAlertChannelForm() {
@@ -466,17 +554,24 @@ func (state *State) paintAlertChannelDialog(canvas *ui.Canvas, viewport ui.Rect)
 		title = m.NotifyEditTitle
 	}
 	signed := form.kind.Signed()
+	isEmail := form.kind == notify.Email
 
-	// 左侧类型列表 6 项，每项高 34px + 间距
+	// 左侧类型列表 5 项，每项高 34px + 间距
 	const kindRowHeight = float32(34)
 	const kindRowGap = float32(4)
 	const kindListPadY = float32(4)
-	kindListHeight := 6*kindRowHeight + 5*kindRowGap + 2*kindListPadY
+	kindItemCount := 5 // Webhook + Feishu + DingTalk + WeCom + Email
+	kindListHeight := float32(kindItemCount)*kindRowHeight + float32(kindItemCount-1)*kindRowGap + 2*kindListPadY
 
-	// 右侧表单高度
-	formHeight := float32(62 + 88) // name + endpoint
-	if signed {
-		formHeight += 88 // secret
+	// 右侧表单高度（与下面 field 数组的高度保持一致）
+	var formHeight float32 = 62 // name
+	if isEmail {
+		formHeight += 4*62 + 88 // host/user/from/to + password
+	} else {
+		formHeight += 88 // endpoint
+		if signed {
+			formHeight += 88 // signing secret
+		}
 	}
 	if form.testText != "" {
 		formHeight += 24
@@ -497,16 +592,14 @@ func (state *State) paintAlertChannelDialog(canvas *ui.Canvas, viewport ui.Rect)
 	// 确定当前选中的类型 hit ID
 	selectedKindID := hitAlertKindWebhook
 	switch form.kind {
-	case notify.Bark:
-		selectedKindID = hitAlertKindBark
-	case notify.ServerChan:
-		selectedKindID = hitAlertKindServer
 	case notify.Feishu:
 		selectedKindID = hitAlertKindFeishu
 	case notify.DingTalk:
 		selectedKindID = hitAlertKindDing
 	case notify.WeCom:
 		selectedKindID = hitAlertKindWeCom
+	case notify.Email:
+		selectedKindID = hitAlertKindEmail
 	}
 
 	f := state.settingsRow.Begin(canvas, theme, layout.Body)
@@ -519,11 +612,10 @@ func (state *State) paintAlertChannelDialog(canvas *ui.Canvas, viewport ui.Rect)
 				label string
 			}{
 				{hitAlertKindWebhook, notify.Webhook, m.NotifyKindWebhook},
-				{hitAlertKindBark, notify.Bark, m.NotifyKindBark},
-				{hitAlertKindServer, notify.ServerChan, m.NotifyKindServerChan},
 				{hitAlertKindFeishu, notify.Feishu, m.NotifyKindFeishu},
 				{hitAlertKindDing, notify.DingTalk, m.NotifyKindDingTalk},
 				{hitAlertKindWeCom, notify.WeCom, m.NotifyKindWeCom},
+				{hitAlertKindEmail, notify.Email, m.NotifyKindEmail},
 			}
 			for _, t := range typeRows {
 				isSelected := t.id == selectedKindID
@@ -553,66 +645,68 @@ func (state *State) paintAlertChannelDialog(canvas *ui.Canvas, viewport ui.Rect)
 		f.Column().Width(1).FillHeight().Background(withAlpha(pal.line, 0.8)).MarginSides(8, 8, 8, 8)
 
 		// 右侧：表单
-		var nameSlot, endpointSlot, secretSlot, testSlot flex.Box
-		f.Column().Grow(1).FillHeight().PadSides(0, 4, 0, 4).Children(func() {
-			nameSlot = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
-			endpointSlot = f.Slot().Height(88).MarginSides(0, 0, 4, 0)
-			if signed {
-				secretSlot = f.Slot().Height(88).MarginSides(0, 0, 4, 0)
+		type field struct {
+			id          ui.ID
+			label       string
+			placeholder string
+			editor      *text.Editor
+			secure      bool
+			height      float32
+		}
+		var fields []field
+		fields = append(fields, field{hitAlertName, m.NotifyName, m.NotifyNamePlaceholder, &form.name, false, 62})
+		if isEmail {
+			fields = append(fields,
+				field{hitAlertEmailHost, m.NotifyEmailHost, m.NotifyEmailHostPlaceholder, &form.emailHost, false, 62},
+				field{hitAlertEmailUser, m.NotifyEmailUser, m.NotifyEmailUserPlaceholder, &form.emailUser, false, 62},
+				field{hitAlertEmailFrom, m.NotifyEmailFrom, m.NotifyEmailFromPlaceholder, &form.emailFrom, false, 62},
+				field{hitAlertEmailTo, m.NotifyEmailTo, m.NotifyEmailToPlaceholder, &form.emailTo, false, 62},
+				field{hitAlertSecret, m.NotifyEmailPassword, m.NotifyEmailPasswordPlaceholder, &form.secret, true, 88},
+			)
+		} else {
+			endpointPh := "https://"
+			if form.editing >= 0 {
+				endpointPh = m.NotifyEndpointKeep
 			}
+			fields = append(fields, field{hitAlertEndpoint, m.NotifyEndpoint, endpointPh, &form.endpoint, false, 88})
+			if signed {
+				secretPh := m.NotifySecretPlaceholder
+				if form.editing >= 0 {
+					secretPh = m.NotifySecretKeep
+				}
+				fields = append(fields, field{hitAlertSecret, m.NotifySecret, secretPh, &form.secret, true, 88})
+			}
+		}
+
+		f.Column().Grow(1).FillHeight().PadSides(0, 4, 0, 4).Children(func() {
+			var slots []flex.Box
+			for _, fd := range fields {
+				slots = append(slots, f.Slot().Height(fd.height).MarginSides(0, 0, 4, 0))
+			}
+			var testSlot flex.Box
 			if form.testText != "" {
 				testSlot = f.Slot().Height(24).MarginSides(0, 0, 4, 0)
 			}
 			state.problemLine(f, form.dialogError)
-		})
 
-		// 绘制表单字段
-		for _, field := range [...]struct {
-			id          ui.ID
-			label       string
-			description string
-			editor      *text.Editor
-			slot        flex.Box
-			secure      bool
-		}{
-			{hitAlertName, m.NotifyName, "", &form.name, nameSlot, false},
-			{hitAlertEndpoint, m.NotifyEndpoint, m.NotifyEndpointHint, &form.endpoint, endpointSlot, false},
-		} {
-			content := components.BeginField(canvas, theme, field.slot.Rect()).Paint(field.label, field.description, "")
-			value := field.editor.String()
-			focused := canvas.Focused() == field.id
-			placeholder := "https://"
-			if field.id == hitAlertEndpoint && form.editing >= 0 {
-				placeholder = m.NotifyEndpointKeep
-			} else if field.id == hitAlertName {
-				placeholder = m.NotifyNamePlaceholder
+			for i, fd := range fields {
+				content := components.BeginField(canvas, theme, slots[i].Rect()).Paint(fd.label, "", "")
+				value := fd.editor.String()
+				focused := canvas.Focused() == fd.id
+				state.paintSecretInput(canvas, content, components.InputSnapshot{
+					ID: fd.id, Label: fd.label, Value: value, Placeholder: fd.placeholder,
+					Secure: fd.secure, Focused: focused, PlatformEditing: focused && value != "",
+				})
 			}
-			state.paintSecretInput(canvas, content, components.InputSnapshot{
-				ID: field.id, Label: field.label, Value: value, Placeholder: placeholder,
-				Secure: field.secure, Focused: focused, PlatformEditing: focused && value != "",
-			})
-		}
-		if signed {
-			content := components.BeginField(canvas, theme, secretSlot.Rect()).Paint(m.NotifySecret, m.NotifySecretHint, "")
-			value := form.secret.String()
-			focused := canvas.Focused() == hitAlertSecret
-			placeholder := m.NotifySecretPlaceholder
-			if form.editing >= 0 {
-				placeholder = m.NotifySecretKeep
+			if form.testText != "" {
+				rect := testSlot.Rect()
+				color := pal.muted
+				if !form.testOK {
+					color = pal.danger
+				}
+				canvas.Label(elide(canvas, form.testText, metrics.FontSizeS, ui.WeightRegular, rect.Width), rect, ui.TextStyle{Size: metrics.FontSizeS, Color: color})
 			}
-			state.paintSecretInput(canvas, content, components.InputSnapshot{
-				ID: hitAlertSecret, Label: m.NotifySecret, Value: value, Placeholder: placeholder,
-				Secure: true, Focused: focused, PlatformEditing: focused && value != "",
-			})
-		}
-		if form.testText != "" {
-			rect := testSlot.Rect()
-			color := pal.muted
-			if !form.testOK {
-				color = pal.danger
-			}
-			canvas.Label(elide(canvas, form.testText, metrics.FontSizeS, ui.WeightRegular, rect.Width), rect, ui.TextStyle{Size: metrics.FontSizeS, Color: color})
-		}
+		})
 	})
 	f.End()
 

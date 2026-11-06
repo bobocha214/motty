@@ -1295,6 +1295,14 @@ func (state *State) EditorFor(hit ui.ID) *text.Editor {
 			return &state.alertForm.endpoint
 		case hitAlertSecret:
 			return &state.alertForm.secret
+		case hitAlertEmailHost:
+			return &state.alertForm.emailHost
+		case hitAlertEmailUser:
+			return &state.alertForm.emailUser
+		case hitAlertEmailFrom:
+			return &state.alertForm.emailFrom
+		case hitAlertEmailTo:
+			return &state.alertForm.emailTo
 		}
 	case modalForm:
 		return state.formEditor(hit)
@@ -2637,7 +2645,9 @@ func (state *State) key(event ui.KeyEvent) ui.EventResult {
 		return ui.EventResult{Handled: true, Repaint: true}
 	}
 	if state.modal == modalAlertChannel && event.Key == ui.KeyEnter && !event.Repeat &&
-		(event.Target == hitAlertName || event.Target == hitAlertEndpoint || event.Target == hitAlertSecret) {
+		(event.Target == hitAlertName || event.Target == hitAlertEndpoint || event.Target == hitAlertSecret ||
+			event.Target == hitAlertEmailHost || event.Target == hitAlertEmailUser ||
+			event.Target == hitAlertEmailFrom || event.Target == hitAlertEmailTo) {
 		state.submitAlertChannel()
 		return ui.EventResult{Handled: true, Repaint: true}
 	}

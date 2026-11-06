@@ -9,12 +9,15 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/smtp"
 	"net/url"
 	"strconv"
 	"strings"
@@ -27,25 +30,22 @@ type Kind uint8
 // The kinds this build speaks.
 const (
 	Webhook Kind = iota
-	Bark
-	ServerChan
 	Feishu
 	DingTalk
 	WeCom
+	Email
 )
 
 func (kind Kind) String() string {
 	switch kind {
-	case Bark:
-		return "bark"
-	case ServerChan:
-		return "serverchan"
 	case Feishu:
 		return "feishu"
 	case DingTalk:
 		return "dingtalk"
 	case WeCom:
 		return "wecom"
+	case Email:
+		return "email"
 	}
 	return "webhook"
 }
@@ -60,28 +60,27 @@ func KindFromString(value string) (Kind, bool) {
 	switch value {
 	case "webhook":
 		return Webhook, true
-	case "bark":
-		return Bark, true
-	case "serverchan":
-		return ServerChan, true
 	case "feishu":
 		return Feishu, true
 	case "dingtalk":
 		return DingTalk, true
 	case "wecom":
 		return WeCom, true
+	case "email":
+		return Email, true
 	}
 	return 0, false
 }
 
 // Channel is one saved destination. Endpoint is the full URL, including the
 // token or device key the service put in it; it belongs in the vault, not in the
-// state file.
+// state file. For Email kind, Endpoint stores the EmailConfig as JSON.
 type Channel struct {
 	Kind     Kind
 	Endpoint string
-	// Secret is the optional signing key of a Feishu or DingTalk robot. It stays
-	// in the vault beside the endpoint.
+	// Secret is the optional signing key of a Feishu or DingTalk robot, or the
+	// SMTP password for an Email channel. It stays in the vault beside the
+	// endpoint.
 	Secret string
 }
 
@@ -111,11 +110,54 @@ const (
 	maxReplyBytes = 8 << 10
 )
 
+// EmailConfig is how a user describes one SMTP destination. It is serialised
+// into Channel.Endpoint as JSON so that the password (Channel.Secret) can
+// remain in a separate vault entry.
+type EmailConfig struct {
+	Host     string   `json:"host"`
+	Port     int      `json:"port"`
+	Username string   `json:"username"`
+	From     string   `json:"from"`
+	To       []string `json:"to"`
+	// Port is kept as an int so the caller does not have to parse ":587"
+	// themselves. Host should be a bare hostname or IP, not a URL.
+}
+
+// ParseEmailConfig reads the JSON the UI stores.
+func ParseEmailConfig(raw string) (EmailConfig, error) {
+	var cfg EmailConfig
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &cfg); err != nil {
+		return cfg, fmt.Errorf("invalid email config: %w", err)
+	}
+	if cfg.Host == "" {
+		return cfg, errors.New("invalid email config: host is required")
+	}
+	if cfg.Port <= 0 || cfg.Port > 65535 {
+		return cfg, errors.New("invalid email config: port must be 1-65535")
+	}
+	if cfg.From == "" {
+		return cfg, errors.New("invalid email config: from address is required")
+	}
+	if len(cfg.To) == 0 {
+		return cfg, errors.New("invalid email config: at least one recipient is required")
+	}
+	for _, to := range cfg.To {
+		if strings.TrimSpace(to) == "" {
+			return cfg, errors.New("invalid email config: empty recipient")
+		}
+	}
+	return cfg, nil
+}
+
 // Validate reports whether a channel can be sent to. It checks the scheme and
 // host, not that the service exists.
 func (channel Channel) Validate() error {
-	if channel.Kind > WeCom {
+	if channel.Kind > Email {
 		return ErrUnknownKind
+	}
+	if channel.Kind == Email {
+		_, err := ParseEmailConfig(channel.Endpoint)
+		return err
 	}
 	endpoint := strings.TrimSpace(channel.Endpoint)
 	if endpoint == "" || len(endpoint) > maxEndpoint {
@@ -138,25 +180,24 @@ func Send(ctx context.Context, client *http.Client, channel Channel, event Event
 	if err := channel.Validate(); err != nil {
 		return err
 	}
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	}
 	if event.Time.IsZero() {
 		event.Time = time.Now()
 	}
+	httpClient := client
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Second}
+	}
 	switch channel.Kind {
-	case Bark:
-		return sendBark(ctx, client, channel.Endpoint, event)
-	case ServerChan:
-		return sendServerChan(ctx, client, channel.Endpoint, event)
 	case Feishu:
-		return sendFeishu(ctx, client, channel, event)
+		return sendFeishu(ctx, httpClient, channel, event)
 	case DingTalk:
-		return sendDingTalk(ctx, client, channel, event)
+		return sendDingTalk(ctx, httpClient, channel, event)
 	case WeCom:
-		return sendWeCom(ctx, client, channel.Endpoint, event)
+		return sendWeCom(ctx, httpClient, channel.Endpoint, event)
+	case Email:
+		return sendEmail(ctx, channel, event)
 	default:
-		return sendWebhook(ctx, client, channel.Endpoint, event)
+		return sendWebhook(ctx, httpClient, channel.Endpoint, event)
 	}
 }
 
@@ -176,40 +217,6 @@ func sendWebhook(ctx context.Context, client *http.Client, endpoint string, even
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "motty")
-	return do(client, request, endpoint)
-}
-
-// sendBark uses Bark's path form: /<device key>/<title>/<body>. The endpoint the
-// user saved is the part up to the key.
-func sendBark(ctx context.Context, client *http.Client, endpoint string, event Event) error {
-	parsed, err := url.Parse(endpoint)
-	if err != nil {
-		return ErrInvalidEndpoint
-	}
-	// JoinPath escapes each segment, so a slash in the message cannot become a
-	// path boundary.
-	parsed = parsed.JoinPath(truncate(event.Title, maxTitleRunes), truncate(event.Body, maxBodyRunes))
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "motty")
-	return do(client, request, endpoint)
-}
-
-// sendServerChan posts the form its .send endpoint takes.
-func sendServerChan(ctx context.Context, client *http.Client, endpoint string, event Event) error {
-	form := url.Values{}
-	form.Set("title", truncate(event.Title, maxTitleRunes))
-	form.Set("desp", truncate(event.Body, maxBodyRunes))
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "motty")
 	return do(client, request, endpoint)
@@ -307,6 +314,120 @@ func sendWeCom(ctx context.Context, client *http.Client, endpoint string, event 
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "motty")
 	return do(client, request, endpoint)
+}
+
+// sendEmail delivers a plain-text email via SMTP. It picks between two modes:
+// port 465 uses TLS-on-connect (smtps); every other port (25, 587, custom)
+// starts with plain SMTP and then upgrades with STARTTLS if the server
+// advertises it.
+func sendEmail(ctx context.Context, channel Channel, event Event) error {
+	cfg, err := ParseEmailConfig(channel.Endpoint)
+	if err != nil {
+		return err
+	}
+	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	subject := truncate(event.Title, maxTitleRunes)
+	body := eventText(event)
+	subject = mimeEncode(subject)
+
+	message := "From: " + cfg.From + "\r\n" +
+		"To: " + strings.Join(cfg.To, ", ") + "\r\n" +
+		"Subject: " + subject + "\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=\"UTF-8\"\r\n" +
+		"Content-Transfer-Encoding: 8bit\r\n" +
+		"Date: " + event.Time.Format(time.RFC1123Z) + "\r\n\r\n" +
+		body + "\r\n"
+
+	// 465 = TLS on connect (smtps).
+	if cfg.Port == 465 {
+		tlsConfig := &tls.Config{ServerName: cfg.Host}
+		conn, err := tls.Dial("tcp", addr, tlsConfig)
+		if err != nil {
+			return fmt.Errorf("notify: email %s: %w", cfg.Host, err)
+		}
+		client, err := smtp.NewClient(conn, cfg.Host)
+		if err != nil {
+			return fmt.Errorf("notify: email %s: %w", cfg.Host, err)
+		}
+		defer client.Close()
+		return smtpSend(ctx, client, cfg, channel.Secret, message)
+	}
+
+	// Plain SMTP with optional STARTTLS.
+	dialer := &net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("notify: email %s: %w", cfg.Host, err)
+	}
+	deadline, ok := ctx.Deadline()
+	if ok {
+		_ = conn.SetDeadline(deadline)
+	}
+	client, err := smtp.NewClient(conn, cfg.Host)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("notify: email %s: %w", cfg.Host, err)
+	}
+	defer client.Close()
+
+	if err := client.Hello("motty"); err != nil {
+		return fmt.Errorf("notify: email hello: %w", err)
+	}
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		tlsConfig := &tls.Config{ServerName: cfg.Host}
+		if err := client.StartTLS(tlsConfig); err != nil {
+			return fmt.Errorf("notify: email %s STARTTLS: %w", cfg.Host, err)
+		}
+	}
+	return smtpSend(ctx, client, cfg, channel.Secret, message)
+}
+
+func smtpSend(ctx context.Context, client *smtp.Client, cfg EmailConfig, password, message string) error {
+	if password != "" {
+		auth := smtp.PlainAuth("", cfg.Username, password, cfg.Host)
+		if err := client.Auth(auth); err != nil {
+			return fmt.Errorf("notify: email auth: %w", err)
+		}
+	}
+	if err := client.Mail(cfg.From); err != nil {
+		return fmt.Errorf("notify: email from: %w", err)
+	}
+	for _, to := range cfg.To {
+		if err := client.Rcpt(strings.TrimSpace(to)); err != nil {
+			return fmt.Errorf("notify: email rcpt: %w", err)
+		}
+	}
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("notify: email data: %w", err)
+	}
+	if _, err := w.Write([]byte(message)); err != nil {
+		_ = w.Close()
+		return fmt.Errorf("notify: email write: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("notify: email close: %w", err)
+	}
+	return client.Quit()
+}
+
+// mimeEncode RFC 2047-encodes an email header value that contains non-ASCII
+// characters. Plain ASCII passes through untouched.
+func mimeEncode(value string) string {
+	if asciiOnly(value) {
+		return value
+	}
+	return "=?UTF-8?B?" + base64.StdEncoding.EncodeToString([]byte(value)) + "?="
+}
+
+func asciiOnly(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] > 127 {
+			return false
+		}
+	}
+	return true
 }
 
 // eventText is the plain form of a message.

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -43,48 +44,6 @@ func TestWebhookPostsTheEventAsJSON(t *testing.T) {
 	}
 	if got.Kind != "alert" || got.Title != "磁盘告警" || got.Body != "web-01 使用率 94%" || got.Time != at.Format(time.RFC3339) {
 		t.Fatalf("payload = %+v", got)
-	}
-}
-
-func TestBarkPutsTheTitleAndBodyInThePath(t *testing.T) {
-	var path string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path = r.URL.Path
-		if r.Method != http.MethodGet {
-			t.Errorf("method = %s", r.Method)
-		}
-	}))
-	defer server.Close()
-
-	err := Send(context.Background(), server.Client(), Channel{Kind: Bark, Endpoint: server.URL + "/device"}, Event{
-		Kind: "test", Title: "Motty 测试", Body: "这是一条测试消息",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if path != "/device/Motty 测试/这是一条测试消息" {
-		t.Fatalf("path = %q", path)
-	}
-}
-
-func TestServerChanPostsTheFormItsEndpointTakes(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
-			t.Errorf("request = %s %q", r.Method, r.Header.Get("Content-Type"))
-		}
-		if err := r.ParseForm(); err != nil {
-			t.Error(err)
-		}
-		if r.PostForm.Get("title") != "测试" || r.PostForm.Get("desp") != "正文" {
-			t.Errorf("form = %v", r.PostForm)
-		}
-	}))
-	defer server.Close()
-
-	if err := Send(context.Background(), server.Client(), Channel{Kind: ServerChan, Endpoint: server.URL + "/key.send"}, Event{
-		Kind: "test", Title: "测试", Body: "正文",
-	}); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -204,16 +163,135 @@ func TestWeComPostsMarkdownWithoutSigning(t *testing.T) {
 	}
 }
 
+// TestEmailSendPlain sets up a minimal plain SMTP listener that accepts a DATA
+// command without STARTTLS. This exercises sendEmail's plain-TCP path with no
+// STARTTLS extension advertised.
+func TestEmailSendPlain(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	var received []byte
+	done := make(chan struct{})
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+		_, _ = conn.Write([]byte("220 localhost ESMTP ready\r\n"))
+		buf := make([]byte, 8192)
+		// Read until "DATA" command
+		state := "init"
+		for {
+			n, _ := conn.Read(buf)
+			if n == 0 {
+				return
+			}
+			got := string(buf[:n])
+			switch {
+			case strings.HasPrefix(got, "EHLO") || strings.HasPrefix(got, "HELO"):
+				// Multi-line EHLO: extensions prefixed with 250-
+				_, _ = conn.Write([]byte("250-localhost\r\n250 AUTH PLAIN\r\n"))
+				state = "ehlo"
+			case strings.HasPrefix(got, "AUTH"):
+				// AUTH PLAIN sends credentials in one command line
+				_, _ = conn.Write([]byte("235 Authenticated\r\n"))
+				state = "auth"
+			case strings.HasPrefix(got, "MAIL FROM"):
+				_, _ = conn.Write([]byte("250 OK\r\n"))
+				state = "mail"
+			case strings.HasPrefix(got, "RCPT TO"):
+				_, _ = conn.Write([]byte("250 OK\r\n"))
+				state = "rcpt"
+			case strings.HasPrefix(got, "DATA"):
+				_, _ = conn.Write([]byte("354 End data with <CR><LF>.<CR><LF>\r\n"))
+				state = "data"
+			case state == "data" && strings.Contains(got, "\r\n.\r\n"):
+				// End of data — QUIT comes next
+				received = append(received, []byte(got)...)
+				_, _ = conn.Write([]byte("250 OK\r\n"))
+			case strings.HasPrefix(got, "QUIT"):
+				_, _ = conn.Write([]byte("221 Bye\r\n"))
+				close(done)
+				return
+			case state == "data":
+				received = append(received, []byte(got)...)
+			}
+		}
+	}()
+
+	addr := ln.Addr().(*net.TCPAddr)
+	cfg := EmailConfig{
+		Host:     "127.0.0.1",
+		Port:     addr.Port,
+		Username: "alice",
+		From:     "alice@example.com",
+		To:       []string{"bob@example.com"},
+	}
+	raw, _ := json.Marshal(cfg)
+
+	err = Send(context.Background(), nil, Channel{
+		Kind: Email, Endpoint: string(raw), Secret: "pw",
+	}, Event{Title: "磁盘告警", Body: "web-01 使用率 94%"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("SMTP server didn't finish — check protocol flow")
+	}
+
+	got := string(received)
+	if !strings.Contains(got, "From: alice@example.com") {
+		t.Errorf("missing From header in:\n%s", got)
+	}
+	if !strings.Contains(got, "To: bob@example.com") {
+		t.Errorf("missing To header in:\n%s", got)
+	}
+	if !strings.Contains(got, "web-01 使用率 94%") {
+		t.Errorf("missing body in:\n%s", got)
+	}
+}
+
+func TestEmailValidateRejectsMissingFields(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		cfg  EmailConfig
+		ok   bool
+	}{
+		{"valid", EmailConfig{Host: "smtp.example.com", Port: 587, Username: "u", From: "a@b.com", To: []string{"c@d.com"}}, true},
+		{"empty host", EmailConfig{Port: 587, Username: "u", From: "a@b.com", To: []string{"c@d.com"}}, false},
+		{"port 0", EmailConfig{Host: "h", Port: 0, Username: "u", From: "a@b.com", To: []string{"c@d.com"}}, false},
+		{"port too big", EmailConfig{Host: "h", Port: 70000, Username: "u", From: "a@b.com", To: []string{"c@d.com"}}, false},
+		{"empty from", EmailConfig{Host: "h", Port: 587, Username: "u", To: []string{"c@d.com"}}, false},
+		{"no recipients", EmailConfig{Host: "h", Port: 587, Username: "u", From: "a@b.com"}, false},
+		{"empty recipient", EmailConfig{Host: "h", Port: 587, Username: "u", From: "a@b.com", To: []string{""}}, false},
+	} {
+		raw, _ := json.Marshal(test.cfg)
+		err := (Channel{Kind: Email, Endpoint: string(raw)}).Validate()
+		if (err == nil) != test.ok {
+			t.Errorf("%s: Validate() err=%v", test.name, err)
+		}
+	}
+}
+
 func TestAChannelMustBeAnHTTPURL(t *testing.T) {
 	for _, test := range []struct {
 		channel Channel
 		ok      bool
 	}{
 		{Channel{Kind: Webhook, Endpoint: "https://example.com/hook"}, true},
-		{Channel{Kind: Bark, Endpoint: "http://127.0.0.1:8080/device"}, true},
 		{Channel{Kind: Feishu, Endpoint: "https://open.feishu.cn/hook", Secret: "s"}, true},
 		{Channel{Kind: DingTalk, Endpoint: "https://oapi.dingtalk.com/robot/send", Secret: "s"}, true},
 		{Channel{Kind: WeCom, Endpoint: "https://qyapi.weixin.qq.com/send"}, true},
+		{Channel{Kind: Email, Endpoint: `{"host":"smtp.example.com","port":587,"username":"u","from":"a@b.com","to":["c@d.com"]}`}, true},
 		{Channel{Kind: Feishu, Endpoint: "https://open.feishu.cn/hook", Secret: strings.Repeat("s", maxSecret+1)}, false},
 		{Channel{Kind: Webhook, Endpoint: ""}, false},
 		{Channel{Kind: Webhook, Endpoint: "example.com/hook"}, false},
@@ -249,5 +327,20 @@ func TestRedactKeepsOnlyTheHost(t *testing.T) {
 	}
 	if got := Redact("not a url"); got != "(invalid endpoint)" {
 		t.Fatalf("redacted = %q", got)
+	}
+}
+
+func TestKindFromStringHandlesRemovedKinds(t *testing.T) {
+	// Bark and ServerChan strings should no longer parse — saved configs using
+	// them get dropped by restoreAlertChannels, which is the desired behaviour.
+	if _, ok := KindFromString("bark"); ok {
+		t.Error("bark should no longer be a valid kind")
+	}
+	if _, ok := KindFromString("serverchan"); ok {
+		t.Error("serverchan should no longer be a valid kind")
+	}
+	// Email should be valid.
+	if k, ok := KindFromString("email"); !ok || k != Email {
+		t.Errorf("email parse = %v %v", k, ok)
 	}
 }

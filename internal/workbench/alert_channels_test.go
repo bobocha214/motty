@@ -24,10 +24,8 @@ func addAlertChannel(t *testing.T, state *State, name string, kind notify.Kind, 
 		t.Fatalf("modal = %d", state.modal)
 	}
 	switch kind {
-	case notify.Bark:
-		state.Click(hitAlertKindBark)
-	case notify.ServerChan:
-		state.Click(hitAlertKindServer)
+	case notify.Email:
+		state.Click(hitAlertKindEmail)
 	case notify.Feishu:
 		state.Click(hitAlertKindFeishu)
 	case notify.DingTalk:
@@ -143,7 +141,7 @@ func TestThePushChannelPageAndDialogPaintTheirControls(t *testing.T) {
 	state.Click(hitAlertAdd)
 	canvas.Reset()
 	state.Paint(&canvas, ui.Size{Width: 1400, Height: 900})
-	for _, id := range []ui.ID{hitAlertKindWebhook, hitAlertKindBark, hitAlertKindServer, hitAlertKindFeishu, hitAlertKindDing, hitAlertKindWeCom, hitAlertName, hitAlertEndpoint, hitAlertTest, hitAlertSave} {
+	for _, id := range []ui.ID{hitAlertKindWebhook, hitAlertKindFeishu, hitAlertKindDing, hitAlertKindWeCom, hitAlertKindEmail, hitAlertName, hitAlertEndpoint, hitAlertTest, hitAlertSave} {
 		if _, ok := hitByID(&canvas, id); !ok {
 			t.Errorf("the dialog does not paint control %d", id)
 		}
@@ -198,20 +196,20 @@ func TestTheTestButtonSendsAMessageToTheChannel(t *testing.T) {
 func TestAPushChannelKeepsItsTokenInTheVault(t *testing.T) {
 	_, options := newWorld(t)
 	state := newTestState(t, options)
-	addAlertChannel(t, state, "Ops", notify.Bark, "https://api.day.app/device-key")
+	addAlertChannel(t, state, "Ops", notify.Webhook, "https://api.example.com/device-key")
 	if state.modal != modalNone || len(state.alertChannels) != 1 {
 		t.Fatalf("modal %d, channels %+v", state.modal, state.alertChannels)
 	}
 	channel := state.alertChannels[0]
-	if channel.ID == 0 || channel.Name != "Ops" || channel.Kind != notify.Bark {
+	if channel.ID == 0 || channel.Name != "Ops" || channel.Kind != notify.Webhook {
 		t.Fatalf("channel = %+v", channel)
 	}
 	endpoint, found, err := state.secrets.vault.Get(alertChannelSecretName(channel.ID))
-	if err != nil || !found || endpoint != "https://api.day.app/device-key" {
+	if err != nil || !found || endpoint != "https://api.example.com/device-key" {
 		t.Fatalf("vault = %q %v %v", endpoint, found, err)
 	}
 	saved, _, err := loadState(state.options.StatePath)
-	if err != nil || len(saved.AlertChannels) != 1 || saved.AlertChannels[0].Name != "Ops" || saved.AlertChannels[0].Kind != "bark" {
+	if err != nil || len(saved.AlertChannels) != 1 || saved.AlertChannels[0].Name != "Ops" || saved.AlertChannels[0].Kind != "webhook" {
 		t.Fatalf("saved channel = %+v %v", saved.AlertChannels, err)
 	}
 	if strings.Contains(string(mustJSON(t, saved)), "device-key") {
@@ -219,11 +217,11 @@ func TestAPushChannelKeepsItsTokenInTheVault(t *testing.T) {
 	}
 
 	restored := newTestState(t, options)
-	if len(restored.alertChannels) != 1 || restored.alertChannels[0].Name != "Ops" || restored.alertChannels[0].Kind != notify.Bark {
+	if len(restored.alertChannels) != 1 || restored.alertChannels[0].Name != "Ops" || restored.alertChannels[0].Kind != notify.Webhook {
 		again, _, _ := loadState(options.StatePath)
 		t.Fatalf("restored = %+v (disk %+v, outcome %q)", restored.alertChannels, again.AlertChannels, restored.stateFileOutcome)
 	}
-	if restored.alertChannels[0].description != restored.messages.Tools.NotifyKindBark {
+	if restored.alertChannels[0].description != restored.messages.Tools.NotifyKindWebhook {
 		t.Fatalf("description = %q", restored.alertChannels[0].description)
 	}
 }
@@ -268,7 +266,7 @@ func TestChangingTheKindNeedsTheAddressAgain(t *testing.T) {
 	state := newTestState(t, options)
 	addAlertChannel(t, state, "Ops", notify.Webhook, "https://hooks.example.com/secret")
 	state.Click(hitAlertEditList.At(0))
-	state.Click(hitAlertKindBark)
+	state.Click(hitAlertKindEmail)
 	state.Click(hitAlertSave)
 	if state.modal != modalAlertChannel || state.alertForm.dialogError != state.messages.Tools.NotifyErrEndpoint {
 		t.Fatalf("modal %d, error %q", state.modal, state.alertForm.dialogError)

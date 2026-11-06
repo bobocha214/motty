@@ -548,15 +548,24 @@ type ToolsMessages struct {
 	NotifyEmpty                     string
 	NotifyEmptyHint                 string
 	NotifyKindWebhook               string
-	NotifyKindBark                  string
-	NotifyKindServerChan            string
 	NotifyKindFeishu                string
 	NotifyKindDingTalk              string
 	NotifyKindWeCom                 string
+	NotifyKindEmail                 string
+	NotifyEmailHost                 string
+	NotifyEmailHostPlaceholder      string
+	NotifyEmailUser                 string
+	NotifyEmailUserPlaceholder      string
+	NotifyEmailFrom                 string
+	NotifyEmailFromPlaceholder      string
+	NotifyEmailTo                   string
+	NotifyEmailToPlaceholder        string
 	NotifySecret                    string
 	NotifySecretPlaceholder         string
 	NotifySecretKeep                string
 	NotifySecretHint                string
+	NotifyEmailPassword             string
+	NotifyEmailPasswordPlaceholder  string
 	NotifyErrSecret                 string
 	NotifyAddTitle                  string
 	NotifyEditTitle                 string
