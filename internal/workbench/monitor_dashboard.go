@@ -30,6 +30,7 @@ var (
 	hitDashboardDelete        = tree.ID(dashboardHits, "delete")
 	hitDashboardSimple        = tree.ID(dashboardHits, "simple")
 	hitDashboardDetailed      = tree.ID(dashboardHits, "detailed")
+	hitDashboardAlerts        = tree.ID(dashboardHits, "alerts")
 	hitDashboardSearch        = tree.ID(dashboardHits, "search")
 	hitDashboardInterval      = tree.ID(dashboardHits, "interval")
 	hitDashboardRetention     = tree.ID(dashboardHits, "retention")
@@ -647,6 +648,9 @@ func (s *State) clickDashboard(id ui.ID) bool {
 	case id == hitDashboardDelete:
 		d.menu = 0
 		s.deleteDashboard()
+	case id == hitDashboardAlerts:
+		s.openSettings()
+		s.selectSettingsCategory(settingsNotifications)
 	case id.Scope() == hitDashboardPanelList:
 		if i := item(id); i < len(d.panels) {
 			d.active = d.panels[i].ID

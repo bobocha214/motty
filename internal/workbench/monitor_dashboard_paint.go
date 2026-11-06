@@ -213,6 +213,7 @@ func (s *State) paintDashboard(c *ui.Canvas, b ui.Rect) {
 	}
 	sortButton.Ghost(m.Sort)
 	components.BeginButton(c, theme, hitDashboardDelete, ui.Rect{X: x + panelW + 80, Y: y + 2, Width: 32}).WithIcon(icons.Trash2).Icon().Ghost(m.Delete)
+	components.BeginButton(c, theme, hitDashboardAlerts, ui.Rect{X: x + panelW + 116, Y: y + 2, Width: 32}).WithIcon(icons.Settings).Icon().Ghost(s.messages.Tools.NotifyChannels)
 	newButton := components.BeginButton(c, actionTheme, hitDashboardNew, newBox).WithIcon(icons.Plus)
 	toggleButton := components.BeginButton(c, actionTheme, hitDashboardToggle, toggleBox).WithIcon(toggleIcon)
 	if compact {
