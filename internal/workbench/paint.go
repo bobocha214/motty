@@ -103,6 +103,7 @@ const (
 	iconClock
 	iconPaperclip
 	iconImage
+	iconBell
 	iconSave
 	iconProcess
 )
@@ -364,6 +365,8 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintFontPicker(canvas, viewport)
 	case modalOutboundProxy:
 		state.paintOutboundProxyDialog(canvas, viewport)
+	case modalAlertChannel:
+		state.paintAlertChannelDialog(canvas, viewport)
 	case modalForm:
 		state.paintFormDialog(canvas, viewport)
 	case modalRemoteTools:
@@ -1964,6 +1967,7 @@ var lucideIcons = [...]ui.Icon{
 	iconPlug:           icons.Plug,
 	iconPaperclip:      icons.Paperclip,
 	iconImage:          icons.Image,
+	iconBell:           icons.Bell,
 	iconSave:           icons.Download,
 	iconPaste:          icons.ClipboardPaste,
 	iconSelectAll:      icons.SquareDashed,

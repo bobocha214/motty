@@ -19,6 +19,7 @@ const (
 	settingsBackup
 	settingsAssistant
 	settingsMCP
+	settingsNotifications
 	settingsShortcuts
 	settingsAbout
 	settingsCategoryCount
@@ -55,6 +56,8 @@ func (category settingsCategory) icon() uint8 {
 		return iconBot
 	case settingsMCP:
 		return iconPlug
+	case settingsNotifications:
+		return iconBell
 	case settingsShortcuts:
 		return iconKeyboard
 	case settingsAbout:
@@ -81,6 +84,8 @@ func (state *State) settingsCategoryName(category settingsCategory) string {
 		return state.messages.AISettings.Title
 	case settingsMCP:
 		return m.CatMCP
+	case settingsNotifications:
+		return m.CatNotifications
 	case settingsShortcuts:
 		return state.messages.SettingsShortcuts
 	case settingsAbout:

@@ -246,6 +246,8 @@ func (state *State) paintSettingsCategory(page *settingsPage) {
 		state.paintAISettings(page)
 	case settingsMCP:
 		state.paintMCPSettings(page)
+	case settingsNotifications:
+		state.paintNotificationSettings(page)
 	case settingsShortcuts:
 		state.paintShortcutSettings(page)
 	case settingsAbout:

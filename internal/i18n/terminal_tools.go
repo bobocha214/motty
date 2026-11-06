@@ -542,6 +542,46 @@ type ToolsMessages struct {
 	PreviousCrashBodyFmt            string
 	CatBackup                       string
 	CatMCP                          string
+	CatNotifications                string
+	NotifyChannels                  string
+	NotifyAdd                       string
+	NotifyEmpty                     string
+	NotifyEmptyHint                 string
+	NotifyKindWebhook               string
+	NotifyKindBark                  string
+	NotifyKindServerChan            string
+	NotifyKindFeishu                string
+	NotifyKindDingTalk              string
+	NotifyKindWeCom                 string
+	NotifySecret                    string
+	NotifySecretPlaceholder         string
+	NotifySecretKeep                string
+	NotifySecretHint                string
+	NotifyErrSecret                 string
+	NotifyAddTitle                  string
+	NotifyEditTitle                 string
+	NotifyDialogDescription         string
+	NotifyName                      string
+	NotifyNamePlaceholder           string
+	NotifyEndpoint                  string
+	NotifyEndpointKeep              string
+	NotifyEndpointHint              string
+	NotifyTest                      string
+	NotifyTesting                   string
+	NotifyTestSent                  string
+	NotifyTestFailedFmt             string
+	NotifySave                      string
+	NotifyEdit                      string
+	NotifyDelete                    string
+	NotifyConfirmDeleteTitle        string
+	NotifyConfirmDeleteFmt          string
+	NotifyErrName                   string
+	NotifyErrEndpoint               string
+	NotifyErrLimit                  string
+	NotifyErrNoVault                string
+	NotifyErrLocked                 string
+	NotifyTestTitle                 string
+	NotifyTestBody                  string
 	BackupGroupFile                 string
 	BackupGroupSync                 string
 	BackupExportRow                 string

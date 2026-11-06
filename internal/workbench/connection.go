@@ -465,6 +465,7 @@ const (
 	modalImportSessions
 	modalFontPicker
 	modalOutboundProxy
+	modalAlertChannel
 	modalForm
 	modalRemoteTools
 	modalFileTransfer

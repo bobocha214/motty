@@ -171,7 +171,9 @@ func excludedFromBackup(name string) bool {
 	case webdavPasswordSecret, s3SecretName, gistTokenSecret, backupPasswordSecret:
 		return true
 	}
-	return false
+	// Push channel endpoints carry the service's token and belong to the
+	// computer they were entered on.
+	return strings.HasPrefix(name, "alert-channel:")
 }
 
 // backupDocument gathers what a backup holds: every shared record, deleted ones

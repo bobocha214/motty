@@ -20,6 +20,7 @@ func TestEverySavedStateFieldIsSharedOrKeptOnThisDevice(t *testing.T) {
 	ownDevice := map[string]bool{
 		"recent_connect_sort": true, "recent_connections": true,
 		"monitor_panels": true, "monitor_active": true,
+		"alert_channels": true,
 		"language": true, "theme": true, "network_proxy": true, "terminal_font_size": true, "text_scale": true, "interface_font": true, "terminal_font_face": true, "terminal_font_family": true, "terminal_font_fallbacks": true,
 		"restore_connect": true, "share_connections": true, "update_check": true, "close_action": true, "update_skipped": true, "ai_panel_width": true, "ai_composer_height": true,
 		"sftp_panel_width": true, "monitor_panel_width": true,
@@ -82,6 +83,7 @@ func richState() savedState {
 		SFTPBookmarks: []savedBookmark{{Host: "host_a", Path: "/var/log"}},
 		Shortcuts:     []savedShortcut{{Action: "new-tab", Key: "t", Modifiers: 1}},
 		OutboundProxy: &savedOutboundProxy{Kind: "socks5", Address: "127.0.0.1:1080"},
+		AlertChannels: []savedAlertChannel{{ID: 1, Name: "Ops", Kind: "webhook"}},
 		IdentityFiles: []string{"/Users/me/.ssh/id_ed25519"},
 		Workspace:     "settings",
 	}

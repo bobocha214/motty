@@ -333,7 +333,7 @@ func (state *State) clickSettings(id ui.ID) bool {
 	if state.modal != modalNone || state.activeSection != sectionSettings {
 		return false
 	}
-	if state.clickLocalShell(id) || state.clickEditorSelect(id) || state.clickStartupHosts(id) {
+	if state.clickLocalShell(id) || state.clickEditorSelect(id) || state.clickStartupHosts(id) || state.clickAlertChannels(id) {
 		return true
 	}
 	for group, hit := range hitToolbarSettingsOpen {

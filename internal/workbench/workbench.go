@@ -518,6 +518,9 @@ type State struct {
 	nextForwardID      uint32
 	nextForwardStartID uint64
 	nextProxyID        uint32
+	nextAlertChannelID uint32
+	alertChannels      []alertChannel
+	alertForm          alertChannelForm
 	forwards           []forwardRecord
 	selectedIdentityID uint32
 	selectedForwardID  uint32
@@ -996,6 +999,7 @@ func New(options Options) *State {
 		nextHostID:            1,
 		nextIdentityID:        1,
 		nextForwardID:         1,
+		nextAlertChannelID:    1,
 		forwardStarts:         make(chan forwardStartResult, 16),
 		nextProxyID:           1,
 		activeSection:         sectionHosts,
@@ -1283,6 +1287,15 @@ func (state *State) EditorFor(hit ui.ID) *text.Editor {
 		case hitOutboundProxyBypass:
 			return &state.proxyForm.bypass
 		}
+	case modalAlertChannel:
+		switch hit {
+		case hitAlertName:
+			return &state.alertForm.name
+		case hitAlertEndpoint:
+			return &state.alertForm.endpoint
+		case hitAlertSecret:
+			return &state.alertForm.secret
+		}
 	case modalForm:
 		return state.formEditor(hit)
 	case modalAutofillRule:
@@ -1474,6 +1487,9 @@ func (state *State) click(id ui.ID, feedback bool) {
 		return
 	case modalOutboundProxy:
 		state.clickOutboundProxy(id)
+		return
+	case modalAlertChannel:
+		state.clickAlertChannel(id)
 		return
 	case modalForm:
 		state.clickForm(id)
@@ -2618,6 +2634,11 @@ func (state *State) key(event ui.KeyEvent) ui.EventResult {
 	if state.modal == modalOutboundProxy && event.Key == ui.KeyEnter && !event.Repeat &&
 		(event.Target == hitOutboundProxyAddress || event.Target == hitOutboundProxyUser || event.Target == hitOutboundProxyPassword || event.Target == hitOutboundProxyBypass) {
 		state.submitOutboundProxy()
+		return ui.EventResult{Handled: true, Repaint: true}
+	}
+	if state.modal == modalAlertChannel && event.Key == ui.KeyEnter && !event.Repeat &&
+		(event.Target == hitAlertName || event.Target == hitAlertEndpoint || event.Target == hitAlertSecret) {
+		state.submitAlertChannel()
 		return ui.EventResult{Handled: true, Repaint: true}
 	}
 	if state.modal == modalForm {

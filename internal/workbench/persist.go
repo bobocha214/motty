@@ -121,6 +121,7 @@ type savedState struct {
 	SFTPBookmarks           []savedBookmark     `json:"sftp_bookmarks,omitempty"`
 	SFTPLocalBookmarks      []string            `json:"sftp_local_bookmarks,omitempty"`
 	OutboundProxy           *savedOutboundProxy `json:"outbound_proxy,omitempty"`
+	AlertChannels           []savedAlertChannel `json:"alert_channels,omitempty"`
 	HighlightBuiltin        string              `json:"highlight_builtin,omitempty"`
 	Highlights              []savedHighlight    `json:"highlights,omitempty"`
 	Snippets                []savedSnippet      `json:"snippets,omitempty"`
@@ -412,6 +413,7 @@ func (state *State) snapshot() savedState {
 	saved := savedState{
 		MonitorPanels:              state.dashboard.panelDefinitions(),
 		MonitorActive:              state.dashboard.active,
+		AlertChannels:              state.savedAlertChannels(),
 		Version:                    stateFileVersion,
 		Language:                   state.savedLanguage(),
 		Theme:                      state.appearanceMode.saved(),
@@ -815,6 +817,7 @@ func (state *State) reloadSettings() error {
 // fonts, what it does at start, the keys it has, the cloud account, the picture.
 func (state *State) restoreLocal(saved savedState) {
 	state.restoreDashboard(saved.MonitorPanels, saved.MonitorActive)
+	state.restoreAlertChannels(saved.AlertChannels)
 	state.backgroundOutputAlerts = saved.BackgroundOutputAlerts
 	state.setTabOrientation(tabOrientationFromString(saved.TabOrientation))
 	state.setVerticalTabsAutoHide(saved.VerticalTabsAutoHide)

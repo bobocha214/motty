@@ -243,6 +243,9 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	row(settingsMCP, ai.AgentConfig, "")
 	row(settingsMCP, ai.AgentActivity, ai.AgentActivityNone)
 
+	row(settingsNotifications, tools.NotifyChannels, tools.NotifyEmptyHint)
+	row(settingsNotifications, tools.NotifyAdd, "")
+
 	for action := shortcutAction(1); action < shortcutActionCount; action++ {
 		row(settingsShortcuts, state.shortcutActionLabel(action), state.shortcuts.labels[action])
 	}
